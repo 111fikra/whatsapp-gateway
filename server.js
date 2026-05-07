@@ -1,59 +1,90 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    makeCacheableSignalKeyStore
+} = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
 const express = require('express');
 const QRCode = require('qrcode');
+const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+app.use(express.json());
 
-// 1. تشغيل السيرفر أولاً وبأسرع وقت ممكن ليرضي Railway
-app.listen(PORT, '0.0.0.0', () => {
-    console.log('====================================');
-    console.log(`🚀 Server live on port ${PORT}`);
-    console.log('====================================');
-    
-    // تأخير تشغيل الواتساب 5 ثوانٍ لضمان استقرار السيرفر
-    setTimeout(startWhatsApp, 5000);
-});
-
+let sock;
 let lastQR = "";
 let isConnected = false;
-const sessionDir = path.join('/tmp', 'session_final');
+
+// مسار التخزين (تأكد أنه نظيف)
+const sessionDir = path.join('/tmp', 'auth_final_v5');
+if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
 async function startWhatsApp() {
-    console.log("🔄 Starting WhatsApp engine...");
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    
+    console.log("--- محاولة بدء محرك واتساب لـ Logistics Hub ---");
 
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true, // سيظهر الرمز في السجلات (المربعات السوداء)
-        browser: ['Logistics Hub', 'Chrome', '1.0.0'],
-        generateHighQualityQR: true
+    sock = makeWASocket({
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+        },
+        printQRInTerminal: true, // المربعات السوداء
+        logger: pino({ level: 'silent' }), 
+        browser: ['Shi One Web', 'Chrome', '1.0.0'],
+        syncFullHistory: false
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
+        
         if (qr) {
             lastQR = qr;
-            console.log("✨ QR Code generated! Check logs or /qr");
+            console.log("========================================");
+            console.log("✨ الرمز جاهز الآن!");
+            console.log("انسخ هذا النص إذا لم تظهر المربعات:");
+            console.log(qr); // طباعة النص الخام للرمز كخطة بديلة
+            console.log("========================================");
         }
+
         if (connection === 'close') {
-            console.log("⚠️ Connection closed. Retrying...");
-            setTimeout(startWhatsApp, 5000);
+            isConnected = false;
+            // حل مشكلة undefined بشكل نهائي
+            const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            console.log('انقطع الاتصال، السبب:', reason || 'غير معروف');
+            
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log('إعادة محاولة الاتصال بعد 5 ثوانٍ...');
+                setTimeout(startWhatsApp, 5000);
+            }
         } else if (connection === 'open') {
-            console.log("✅ WA CONNECTED SUCCESSFULLY");
+            console.log('✅ تم الاتصال بنجاح وبوابة Logistics Hub تعمل الآن!');
             isConnected = true;
+            lastQR = "connected";
         }
     });
 }
 
+// مسار الـ QR
 app.get('/qr', async (req, res) => {
-    if (!lastQR) return res.send("Generating... please refresh");
-    const img = await QRCode.toDataURL(lastQR);
-    res.send(`<center><img src="${img}" width="300"></center>`);
+    if (isConnected) return res.send('<h1>✅ المتجر متصل بالواتساب</h1>');
+    if (!lastQR) return res.send('<h1>⏳ جاري تجهيز الرمز.. انتظر 10 ثوانٍ وحدث الصفحة</h1>');
+    
+    try {
+        const qrImage = await QRCode.toDataURL(lastQR);
+        res.send(`<div style="text-align:center;"><img src="${qrImage}" width="300"/><p>امسح الرمز من هاتفك</p></div>`);
+    } catch (e) { res.send('Error generating image'); }
 });
 
-app.get('/', (req, res) => res.send("Logistics Hub API is active."));
+app.get('/', (req, res) => res.send('WhatsApp Gateway is UP'));
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 السيرفر يعمل على المنفذ: ${PORT}`);
+    startWhatsApp();
+});
