@@ -18,22 +18,24 @@ let sock;
 let lastQR = "";
 let isConnected = false;
 
-// استخدام مسار جديد لتجنب أي ملفات تالفة
-const sessionDir = path.join('/tmp', 'auth_session_v3');
+// استخدام مسار نظيف في كل مرة لضمان عدم وجود ملفات تالفة
+const sessionDir = path.join('/tmp', 'auth_v4');
 if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
-async function connectToWA() {
+async function startWA() {
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     
-    console.log("محاولة بدء الاتصال بواتساب...");
-
+    // إعداد الواتساب بأقل استهلاك ذاكرة ممكن
     sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true, // سيظهر الرمز في السجلات كـ مربعات سوداء
-        logger: pino({ level: 'silent' }), // إغلاق السجلات تماماً لتوفير الرام
-        browser: ['Logistics Hub', 'Chrome', '1.0.0'],
-        syncFullHistory: false, // تعطيل مزامنة السجلات القديمة لتوفير الذاكرة
-        markOnlineOnConnect: false
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+        },
+        printQRInTerminal: true, // سيظهر الرمز كمربعات في سجلات Railway السوداء
+        logger: pino({ level: 'silent' }), // إخفاء السجلات تماماً لتوفير الرام
+        browser: ['Shi One Gateway', 'Chrome', '1.0.0'],
+        version: [2, 3000, 1015901307], // استخدام نسخة ثابتة لتسريع البدء
+        syncFullHistory: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -43,40 +45,43 @@ async function connectToWA() {
         
         if (qr) {
             lastQR = qr;
-            console.log(">> تم توليد رمز QR جديد بنجاح.");
+            console.log(">> QR CODE READY: Visit /qr or check terminal logs.");
         }
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.code;
-            console.log('انقطع الاتصال. الكود:', statusCode);
             isConnected = false;
+            // حل مشكلة undefined بإضافة check بسيط
+            const error = lastDisconnect?.error;
+            const statusCode = error instanceof Boom ? error.output.statusCode : error?.code;
+            
+            console.log(`Connection closed (Code: ${statusCode}). Reconnecting...`);
             
             if (statusCode !== DisconnectReason.loggedOut) {
-                setTimeout(connectToWA, 5000);
+                setTimeout(startWA, 5000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم الاتصال بنجاح!');
+            console.log('✅ WA CONNECTED');
             isConnected = true;
             lastQR = "connected";
         }
     });
 }
 
-// صفحة الـ QR
+// مسار الـ QR المحسن
 app.get('/qr', async (req, res) => {
-    if (isConnected) return res.send('<h1>✅ متصل بالفعل</h1>');
-    if (!lastQR) return res.send('<h1>⏳ جاري توليد الرمز... انتظر 30 ثانية ثم حدث الصفحة</h1><script>setTimeout(()=>location.reload(), 15000)</script>');
+    if (isConnected) return res.send('<h1>Connected!</h1>');
+    if (!lastQR) return res.send('<h1>Generating QR... please wait 15s</h1><script>setTimeout(()=>location.reload(), 10000)</script>');
     
     try {
         const qrImage = await QRCode.toDataURL(lastQR);
-        res.send(`<div style="text-align:center;padding-top:50px;"><h2>امسح الرمز لربط بوابة Logistics Hub</h2><img src="${qrImage}" width="300"/><p>تتحدث الصفحة تلقائياً...</p></div><script>setTimeout(()=>location.reload(), 20000)</script>`);
-    } catch (err) { res.send('خطأ في توليد الصورة'); }
+        res.send(`<div style="text-align:center;"><img src="${qrImage}" width="300"/><p>Refresh if it fails.</p></div>`);
+    } catch (e) { res.status(500).send('Error'); }
 });
 
-app.get('/', (req, res) => res.send('WhatsApp Gateway is Active'));
+app.get('/', (req, res) => res.send('API Running'));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`السيرفر يعمل على منفذ: ${PORT}`);
-    connectToWA();
+    console.log(`Server live on ${PORT}`);
+    startWA();
 });
