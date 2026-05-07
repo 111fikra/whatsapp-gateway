@@ -29,7 +29,7 @@ if (!fs.existsSync(sessionDir)) {
 }
 
 async function connectToWhatsApp() {
-    const { version } = await fetchLatestBaileysVersion();
+    const version = [2, 3000, 1015901307];
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
     console.log("Starting WhatsApp Connection...");
