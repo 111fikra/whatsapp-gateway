@@ -2,48 +2,38 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const QRCode = require('qrcode');
-const bodyParser = require('body-parser');
-const cors = require('cors');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-app.use(bodyParser.json());
-app.use(cors());
+app.use(express.json());
 
 let sock;
 let lastQR = "";
 let isConnected = false;
 
-// إعداد مسار الجلسة
-const sessionDir = path.join('/tmp', 'auth_info_v2');
-if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-}
+// استخدام مسار جديد لتجنب أي ملفات تالفة
+const sessionDir = path.join('/tmp', 'auth_session_v3');
+if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
-async function connectToWhatsApp() {
-    const version = [2, 3000, 1015901307];
+async function connectToWA() {
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-
-    console.log("Starting WhatsApp Connection...");
+    
+    console.log("محاولة بدء الاتصال بواتساب...");
 
     sock = makeWASocket({
-        version,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-        },
-        printQRInTerminal: true, // سيظهر الرمز في سجلات Railway أيضاً
-        logger: pino({ level: 'info' }), // رفع مستوى السجلات مؤقتاً للتشخيص
+        auth: state,
+        printQRInTerminal: true, // سيظهر الرمز في السجلات كـ مربعات سوداء
+        logger: pino({ level: 'silent' }), // إغلاق السجلات تماماً لتوفير الرام
         browser: ['Logistics Hub', 'Chrome', '1.0.0'],
-        generateHighQualityQR: true
+        syncFullHistory: false, // تعطيل مزامنة السجلات القديمة لتوفير الذاكرة
+        markOnlineOnConnect: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -53,50 +43,40 @@ async function connectToWhatsApp() {
         
         if (qr) {
             lastQR = qr;
-            console.log(">> New QR Code Generated! Check the /qr page.");
+            console.log(">> تم توليد رمز QR جديد بنجاح.");
         }
 
         if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.code;
+            console.log('انقطع الاتصال. الكود:', statusCode);
             isConnected = false;
-            const shouldReconnect = (lastDisconnect.error instanceof Boom) ? 
-                lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
             
-            console.log('Connection closed, reconnecting:', shouldReconnect);
-            if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 5000);
+            if (statusCode !== DisconnectReason.loggedOut) {
+                setTimeout(connectToWA, 5000);
             }
         } else if (connection === 'open') {
-            console.log('✅ WA Connected Successfully');
+            console.log('✅ تم الاتصال بنجاح!');
             isConnected = true;
             lastQR = "connected";
         }
     });
 }
 
+// صفحة الـ QR
 app.get('/qr', async (req, res) => {
-    if (isConnected) return res.send('<h1>✅ Connected</h1>');
-    if (!lastQR) return res.send('<h1>⏳ Generating... Refresh in 30s</h1><script>setTimeout(()=>location.reload(), 10000)</script>');
+    if (isConnected) return res.send('<h1>✅ متصل بالفعل</h1>');
+    if (!lastQR) return res.send('<h1>⏳ جاري توليد الرمز... انتظر 30 ثانية ثم حدث الصفحة</h1><script>setTimeout(()=>location.reload(), 15000)</script>');
     
     try {
         const qrImage = await QRCode.toDataURL(lastQR);
-        res.send(`<div style="text-align:center;"><h1>Scan Me</h1><img src="${qrImage}" width="300"/></div><script>setTimeout(()=>location.reload(), 20000)</script>`);
-    } catch (err) { res.send('Error'); }
+        res.send(`<div style="text-align:center;padding-top:50px;"><h2>امسح الرمز لربط بوابة Logistics Hub</h2><img src="${qrImage}" width="300"/><p>تتحدث الصفحة تلقائياً...</p></div><script>setTimeout(()=>location.reload(), 20000)</script>`);
+    } catch (err) { res.send('خطأ في توليد الصورة'); }
 });
 
-app.post('/send-otp', async (req, res) => {
-    const { phone, code } = req.body;
-    if (!isConnected) return res.status(500).json({ error: 'Not connected' });
-    try {
-        const id = phone.replace(/\D/g, '') + '@s.whatsapp.net';
-        await sock.sendMessage(id, { text: `كود التحقق الخاص بك هو: ${code}` });
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/', (req, res) => res.send('API Active'));
+app.get('/', (req, res) => res.send('WhatsApp Gateway is Active'));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server live on ${PORT}`);
-    connectToWhatsApp();
+    console.log(`السيرفر يعمل على منفذ: ${PORT}`);
+    connectToWA();
 });
