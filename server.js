@@ -43,13 +43,13 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
         if (qr) {
             lastQR = qr;
+        console.log("New QR Generated"); // تأكد من وجود هذا السطر ليظهر في السجلات
         }
-
+   
         if (connection === 'close') {
             isConnected = false;
             const shouldReconnect = (lastDisconnect.error instanceof Boom) ? 
