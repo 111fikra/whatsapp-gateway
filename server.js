@@ -1,32 +1,25 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const express = require('express');
 const QRCode = require('qrcode');
 const pino = require('pino');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-let sock;
 let lastQR = "";
 let isConnected = false;
 
-async function startWA() {
-    // استخدام مسار نظيف تماماً
-    const { state, saveCreds } = await useMultiFileAuthState('/tmp/baileys_auth_final');
+async function startWhatsApp() {
+    // التخزين في مجلد محلي داخل المشروع بدلاً من /tmp
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_session_local');
     
-    console.log("🔄 محاولة تشغيل المحرك...");
+    console.log("--- محاولة تشغيل المحرك (نسخة الاستقرار) ---");
 
-    sock = makeWASocket({
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-        },
-        printQRInTerminal: true, // لطباعة المربعات في السجلات
-        logger: pino({ level: 'silent' }), // صامت تماماً لتوفير الرام
-        browser: ['Logistics Hub', 'Chrome', '1.0.0'],
-        generateHighQualityQR: false // جودة عادية لتوفير الموارد
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true, 
+        logger: pino({ level: 'silent' }),
+        browser: ['Shi One Gateway', 'Chrome', '1.0.0']
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -37,19 +30,15 @@ async function startWA() {
         if (qr) {
             lastQR = qr;
             console.log("========================================");
-            console.log("✨ الرمز جاهز! إذا لم تظهر المربعات، انسخ هذا النص:");
-            console.log(qr); 
+            console.log("✨ الرمز جاهز! انسخ النص التالي فوراً:");
+            console.log(qr); // هذا هو النص الذي سنحوله لصور
             console.log("========================================");
         }
 
         if (connection === 'close') {
             isConnected = false;
-            // معالجة ذكية لخطأ undefined
-            const shouldReconnect = (lastDisconnect?.error instanceof Boom) ? 
-                lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
-            
-            console.log('❌ انقطع الاتصال. جاري إعادة المحاولة...', shouldReconnect);
-            if (shouldReconnect) setTimeout(startWA, 5000);
+            console.log('⚠️ الاتصال تعثر.. إعادة محاولة بعد 5 ثوانٍ');
+            setTimeout(startWhatsApp, 5000);
         } else if (connection === 'open') {
             console.log('✅ تم الاتصال بنجاح!');
             isConnected = true;
@@ -57,17 +46,15 @@ async function startWA() {
     });
 }
 
-// السيرفر يستجيب فوراً لـ Railway ليظل حياً
-app.get('/', (req, res) => res.send('API Active'));
-
 app.get('/qr', async (req, res) => {
-    if (isConnected) return res.send('Connected!');
-    if (!lastQR) return res.send('Wait 15s and refresh...');
+    if (!lastQR) return res.send('جاري التجهيز.. انتظر دقيقة');
     const img = await QRCode.toDataURL(lastQR);
     res.send(`<center><img src="${img}" width="300"></center>`);
 });
 
+app.get('/', (req, res) => res.send('B gateway is Online'));
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server on port ${PORT}`);
-    startWA();
+    console.log(`Server started on ${PORT}`);
+    startWhatsApp();
 });
